@@ -1,7 +1,7 @@
 runpod
 torch==2.8.0
 torchvision==0.23.0
-transformers>=4.40.0
+transformers>=4.49.0
 accelerate
 pillow  # Using regular pillow to avoid build issues
 opencv-python-headless
@@ -9,3 +9,5 @@ huggingface_hub
 protobuf
 numpy<2.0
 pdf2image
+compressed-tensors
+qwen-vl-utils

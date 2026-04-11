@@ -1,7 +1,6 @@
 runpod
-torch==2.8.0
-torchvision==0.23.0
-transformers==4.49.0
+# Torch is managed by the base image / vLLM implicitly
+transformers>=4.49.0,<4.50.0
 accelerate
 pillow  # Using regular pillow to avoid build issues
 opencv-python-headless

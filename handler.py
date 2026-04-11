@@ -5,7 +5,7 @@ import time
 import torch
 import runpod
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText
+from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from pdf2image import convert_from_bytes
 
 # ===============================
@@ -206,7 +206,7 @@ def load_model():
     
     # Try loading with Flash Attention 2 for faster inference
     try:
-        model = AutoModelForImageTextToText.from_pretrained(
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             MODEL_PATH,
             device_map="auto",
             torch_dtype=dtype,
@@ -217,7 +217,7 @@ def load_model():
         log("Loaded with Flash Attention 2")
     except Exception as e:
         log(f"Flash Attention 2 not available ({e}), using default attention")
-        model = AutoModelForImageTextToText.from_pretrained(
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             MODEL_PATH,
             device_map="auto",
             torch_dtype=dtype,

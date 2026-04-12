@@ -36,13 +36,30 @@ RUN apt-get update && apt-get install -y \
 
 # -------------------------------
 # PYTHON DEPENDENCIES
+# Install in strict order:
+#   1. Pin vLLM first so olmocr cannot override it
+#   2. Install olmocr (no [gpu] extra) so it uses the pinned vLLM
 # -------------------------------
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
+# Step 1: pin vLLM 0.7.3 explicitly before anything else
+RUN pip install --no-cache-dir \
+    "vllm==0.7.3" \
+    --extra-index-url https://download.pytorch.org/whl/cu128
+
+# Step 2: install remaining packages (olmocr without [gpu] extra)
+RUN pip install --no-cache-dir -r requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    --no-deps-only || true
+
+RUN pip install --no-cache-dir -r requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Flash Attention 2 for faster inference (optional — falls back gracefully)
 RUN pip install --no-cache-dir flash-attn --no-build-isolation || echo "Flash Attention 2 build failed, will use default attention"
+
+# Ensure vLLM wasn't downgraded/upgraded by the above steps
+RUN pip install --no-cache-dir "vllm==0.7.3" --force-reinstall --no-deps
 
 # -------------------------------
 # MODEL DOWNLOAD (BUILD TIME)

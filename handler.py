@@ -25,7 +25,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MODEL_PATH = "/models/hf/allenai/olmOCR-2-7B-1025-FP8"
 MAX_PAGES = 100
 MAX_NEW_TOKENS = 1536
-BATCH_SIZE = 4   # pages per forward pass — tune down if OOM, up for speed
+BATCH_SIZE = 8   # pages per forward pass — tune down if OOM, up for speed
 
 model = None
 processor = None
@@ -106,18 +106,26 @@ def load_model():
     processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
 
     log("Loading model onto GPU...")
-    # Use Auto class — the checkpoint is qwen2_5_vl, not qwen2_vl.
-    # trust_remote_code lets the model's own __init__ handle FP8 weight loading
-    # without transformers trying to randomly re-initialize missing keys in FP8.
+    # Load as bfloat16 — the FP8 checkpoint is dequantized on load.
+    # FP8 inference kernels are not available on Blackwell (sm_120) yet,
+    # so running in FP8 falls back to slow scalar ops (~90s/page).
+    # bfloat16 uses native tensor cores and is ~10x faster here.
     model = AutoModelForImageTextToText.from_pretrained(
         MODEL_PATH,
-        torch_dtype="auto",        # let the checkpoint decide (FP8 / bfloat16)
+        torch_dtype=torch.bfloat16,
         device_map="cuda",
         trust_remote_code=True,
         local_files_only=True,
+        ignore_mismatched_sizes=True,
+        attn_implementation="sdpa",  # scaled dot-product attention — faster than eager
     )
     model.eval()
-    log("Model loaded successfully")
+
+    log("Compiling model with torch.compile...")
+    # torch.compile fuses ops and enables CUDA graphs — big win on Blackwell.
+    # "reduce-overhead" is the best mode for repeated same-shape inference.
+    model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
+    log("Model loaded and compiled successfully")
 
 # ===============================
 # OCR PROMPT
@@ -174,6 +182,7 @@ def ocr_batch(images: list) -> list:
                 max_new_tokens=MAX_NEW_TOKENS,
                 do_sample=False,
                 repetition_penalty=1.1,
+                use_cache=True,
             )
 
         # Decode only the newly generated tokens (strip the prompt)

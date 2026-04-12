@@ -11,5 +11,8 @@ compressed-tensors
 olmocr
 
 # SGLang — replaces transformers for inference (continuous batching, prefix cache, cuda graphs)
-# Install the nightly build for Blackwell (sm_120 / cu128) support
-sglang[all] --find-links https://flashinfer.ai/whl/cu128/torch2.8/flashinfer-python
+sglang[all]
+
+# FlashInfer core packages (from PyPI)
+flashinfer-python
+flashinfer-cubin

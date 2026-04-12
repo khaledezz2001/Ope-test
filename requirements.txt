@@ -1,6 +1,4 @@
 runpod
-# olmOCR bundles the correct vLLM + transformers versions
-olmocr[gpu]
 pillow
 opencv-python-headless
 huggingface_hub
@@ -9,3 +7,10 @@ numpy<2.0
 pdf2image
 compressed-tensors
 qwen-vl-utils
+
+# Pin vLLM BEFORE olmocr installs its own version.
+# vLLM >=0.8 changed config validation and breaks olmOCR-2-7B-1025-FP8.
+vllm==0.7.3
+
+# Install olmocr WITHOUT its gpu extras so it doesn't override the pinned vLLM above.
+olmocr

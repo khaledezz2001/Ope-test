@@ -5,7 +5,7 @@ import time
 import torch
 import runpod
 from PIL import Image
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import AutoProcessor, AutoModelForImageTextToText
 from pdf2image import convert_from_bytes
 
 # ===============================
@@ -106,10 +106,14 @@ def load_model():
     processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
 
     log("Loading model onto GPU...")
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
+    # Use Auto class — the checkpoint is qwen2_5_vl, not qwen2_vl.
+    # trust_remote_code lets the model's own __init__ handle FP8 weight loading
+    # without transformers trying to randomly re-initialize missing keys in FP8.
+    model = AutoModelForImageTextToText.from_pretrained(
         MODEL_PATH,
-        torch_dtype=torch.bfloat16,
+        torch_dtype="auto",        # let the checkpoint decide (FP8 / bfloat16)
         device_map="cuda",
+        trust_remote_code=True,
         local_files_only=True,
     )
     model.eval()

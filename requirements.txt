@@ -1,18 +1,18 @@
+# RunPod serverless
 runpod
+
+# Image / PDF processing
 pillow
 pdf2image
 numpy<2.0
+
+# HF ecosystem
 huggingface_hub
 protobuf
+transformers
+accelerate
+
+# olmOCR model deps
 qwen-vl-utils
 compressed-tensors
-
-# olmocr (no [gpu] extra — torch is in base image)
 olmocr
-
-# SGLang — replaces transformers for inference (continuous batching, prefix cache, cuda graphs)
-sglang[all]
-
-# FlashInfer core packages (from PyPI)
-flashinfer-python
-flashinfer-cubin

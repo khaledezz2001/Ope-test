@@ -5,8 +5,7 @@ import time
 import torch
 import runpod
 from PIL import Image
-from transformers import AutoProcessor
-from vllm import LLM, SamplingParams
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 from pdf2image import convert_from_bytes
 
 # ===============================
@@ -19,21 +18,17 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 # ===============================
 # CONFIG
 # ===============================
 MODEL_PATH = "/models/hf/allenai/olmOCR-2-7B-1025-FP8"
 MAX_PAGES = 100
+MAX_NEW_TOKENS = 1536
+BATCH_SIZE = 4   # pages per forward pass — tune down if OOM, up for speed
 
-llm_engine = None
+model = None
 processor = None
-sampling_params = SamplingParams(
-    temperature=0.0,
-    max_tokens=1536,
-    repetition_penalty=1.1
-)
 
 def log(msg):
     print(f"[BOOT] {msg}", flush=True)
@@ -42,12 +37,11 @@ def log(msg):
 # HALLUCINATION DETECTION
 # ===============================
 def is_hallucinated_output(text: str) -> bool:
-    """Detect if the OCR output is hallucinated/garbage"""
     if not text or len(text.strip()) < 10:
         return True
-    
+
     text_lower = text.lower()
-    
+
     hallucination_indicators = [
         "table 1:", "comparison of different methods", "note: the choice of method",
         "this page is blank", "no text found", "empty page", "the image appears to be",
@@ -57,32 +51,30 @@ def is_hallucinated_output(text: str) -> bool:
     for indicator in hallucination_indicators:
         if indicator in text_lower:
             return True
-            
+
     lines = text.strip().split('\n')
     if len(lines) > 20:
         unique_lines = set(line.strip() for line in lines if line.strip())
         if len(unique_lines) < 3:
             return True
-            
-    table_markers = text.count('|')
+
     pipe_lines = sum(1 for line in lines if '|' in line)
-    
     if len(lines) > 0 and pipe_lines / len(lines) > 0.5:
         content_without_pipes = text.replace('|', '').replace('-', '').replace('\n', '').strip()
         if len(content_without_pipes) < 100:
             return True
-            
+
+    table_markers = text.count('|')
     if table_markers > 10:
         table_rows = [line for line in lines if '|' in line]
         if len(table_rows) > 3:
             pipe_counts = [line.count('|') for line in table_rows]
             if len(set(pipe_counts)) == 1 and pipe_counts[0] > 3:
                 return True
-                
-    alphanumeric_chars = sum(c.isalnum() for c in text)
-    if alphanumeric_chars < 10:
+
+    if sum(c.isalnum() for c in text) < 10:
         return True
-        
+
     return False
 
 # ===============================
@@ -106,23 +98,22 @@ def decode_pdf(b64):
 # LOAD MODEL ONCE
 # ===============================
 def load_model():
-    global processor, llm_engine
-    if llm_engine is not None:
+    global model, processor
+    if model is not None:
         return
 
     log("Loading processor...")
     processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
 
-    log("Loading vLLM engine...")
-    llm_engine = LLM(
-        model=MODEL_PATH,
-        trust_remote_code=True,
-        tokenizer_mode="auto",      # required for multimodal in vLLM 0.7.x
-        max_model_len=4096,
-        limit_mm_per_prompt={"image": 1},
-        gpu_memory_utilization=0.9,
+    log("Loading model onto GPU...")
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
+        MODEL_PATH,
+        torch_dtype=torch.bfloat16,
+        device_map="cuda",
+        local_files_only=True,
     )
-    log("vLLM engine loaded successfully")
+    model.eval()
+    log("Model loaded successfully")
 
 # ===============================
 # OCR PROMPT
@@ -133,54 +124,64 @@ OCR_PROMPT_TEXT = (
     "Convert equations to LateX and tables to HTML."
 )
 
-def build_messages_for_image():
-    """Build the chat messages for a single image."""
+def build_messages(image: Image.Image) -> list:
     return [
         {
             "role": "user",
             "content": [
-                {"type": "image"},
-                {"type": "text", "text": OCR_PROMPT_TEXT}
+                {"type": "image", "image": image},
+                {"type": "text",  "text": OCR_PROMPT_TEXT}
             ]
         }
     ]
 
 # ===============================
-# BATCH OCR (vLLM natively)
+# BATCH OCR (transformers)
 # ===============================
 def ocr_batch(images: list) -> list:
-    """Process a batch of images using vLLM's lightning fast generate."""
-    
-    vllm_inputs = []
-    messages = build_messages_for_image()
-    
-    # Build standard chat templates text
-    prompt_text = processor.apply_chat_template(
-        messages,
-        add_generation_prompt=True
-    )
-    
-    # We queue up all images at once; vLLM handles parallel streaming internally!
-    for img in images:
-        vllm_inputs.append({
-            "prompt": prompt_text,
-            "multi_modal_data": {"image": img}
-        })
-        
-    outputs = llm_engine.generate(vllm_inputs, sampling_params=sampling_params)
-    
-    # Extract results
     results = []
-    for output in outputs:
-        # Get the highest probability string (index 0)
-        decoded = output.outputs[0].text
-        
-        if "assistant" in decoded.lower():
-            idx = decoded.lower().index("assistant") + len("assistant")
-            decoded = decoded[idx:]
-            
-        results.append(decoded.strip())
-        
+
+    for i in range(0, len(images), BATCH_SIZE):
+        chunk = images[i:i + BATCH_SIZE]
+
+        # Build per-image chat messages and apply the chat template
+        texts = []
+        all_images = []
+        for img in chunk:
+            messages = build_messages(img)
+            text = processor.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            texts.append(text)
+            all_images.append(img)
+
+        inputs = processor(
+            text=texts,
+            images=all_images,
+            return_tensors="pt",
+            padding=True,
+        ).to("cuda")
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=MAX_NEW_TOKENS,
+                do_sample=False,
+                repetition_penalty=1.1,
+            )
+
+        # Decode only the newly generated tokens (strip the prompt)
+        input_len = inputs["input_ids"].shape[1]
+        for gen_ids in generated_ids:
+            new_tokens = gen_ids[input_len:]
+            decoded = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+            results.append(decoded.strip())
+
+        del inputs, generated_ids
+        torch.cuda.empty_cache()
+
     return results
 
 # ===============================
@@ -188,7 +189,7 @@ def ocr_batch(images: list) -> list:
 # ===============================
 def handler(event):
     load_model()
-    
+
     try:
         if "image" in event["input"]:
             pages = [decode_image(event["input"]["image"])]
@@ -198,33 +199,27 @@ def handler(event):
             return {"status": "error", "message": "Missing image or file"}
 
         total_pages = len(pages)
-        log(f"Processing {total_pages} pages using vLLM engine...")
+        log(f"Processing {total_pages} pages using transformers...")
         start_time = time.time()
 
-        # Let vLLM digest all images instantly instead of manual small looping chunks.
-        # It handles batching internal to its CUDA graphs automatically based on available limits.
         batch_results = ocr_batch(pages)
-            
+
         extracted_pages = []
         for j, text in enumerate(batch_results):
             page_num = j + 1
-            
-            if text.upper() == "EMPTY_PAGE" or text.upper().startswith("EMPTY_PAGE"):
+
+            if text.upper().startswith("EMPTY_PAGE"):
                 text = "[Empty or unreadable page]"
             elif is_hallucinated_output(text):
                 log(f"Warning: Page {page_num} appears to be hallucinated")
                 text = "[Empty or unreadable page]"
-            
-            extracted_pages.append({
-                "page": page_num,
-                "text": text
-            })
-            
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+            extracted_pages.append({"page": page_num, "text": text})
+
+        torch.cuda.empty_cache()
 
         elapsed = time.time() - start_time
-        log(f"Completed {total_pages} pages cleanly in {elapsed:.1f}s ({elapsed/total_pages:.1f}s/page)")
+        log(f"Completed {total_pages} pages in {elapsed:.1f}s ({elapsed/total_pages:.1f}s/page)")
 
         return {
             "status": "success",
@@ -234,14 +229,13 @@ def handler(event):
 
     except Exception as e:
         log(f"Error: {str(e)}")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         return {"status": "error", "message": str(e)}
 
 # ===============================
 # PRELOAD & WARMUP
 # ===============================
-log("Preloading model wrapper...")
+log("Preloading model...")
 load_model()
 
 if torch.cuda.is_available():
@@ -251,8 +245,6 @@ if torch.cuda.is_available():
         _ = ocr_batch([dummy_image])
         log("Warmup complete!")
     except Exception as e:
-        log(f"Warmup generated error log: {e}")
+        log(f"Warmup error: {e}")
 
-runpod.serverless.start({
-    "handler": handler
-})
+runpod.serverless.start({"handler": handler})

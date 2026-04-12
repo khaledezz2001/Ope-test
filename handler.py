@@ -111,7 +111,7 @@ def load_model():
         return
 
     log("Loading processor...")
-    processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True, use_fast=True)
+    processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
 
     log("Loading vLLM engine...")
     llm_engine = LLM(

@@ -85,7 +85,9 @@ WORKDIR /build/vllm
 # so it uses our already-installed torch 2.9 nightly
 RUN python use_existing_torch.py
 
-RUN pip install --no-cache-dir -r requirements/build.txt
+# Skip requirements/build.txt — it pins torch versions that conflict with our nightly.
+# Only the actual compiler deps are needed.
+RUN pip install --no-cache-dir ninja packaging setuptools-scm
 
 RUN MAX_JOBS=${MAX_JOBS} pip install --no-cache-dir \
     --no-build-isolation \

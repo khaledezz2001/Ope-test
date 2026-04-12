@@ -13,10 +13,14 @@ ENV HF_HUB_DISABLE_XET=1
 ENV TOKENIZERS_PARALLELISM=false
 
 # -------------------------------
-# CUDA OPTIMIZATIONS
+# CUDA / SGLang OPTIMIZATIONS
 # -------------------------------
 ENV CUDA_VISIBLE_DEVICES=0
+# Tell torch/sglang which arch to target (Blackwell = sm_120)
 ENV TORCH_CUDA_ARCH_LIST="12.0+PTX"
+
+# SGLang uses its own CUDA graph warmup — this tells it to use all available VRAM
+ENV SGL_DISABLE_DISK_CACHE=1
 
 # -------------------------------
 # SYSTEM DEPENDENCIES
@@ -35,18 +39,22 @@ RUN apt-get update && apt-get install -y \
 
 # -------------------------------
 # PYTHON DEPENDENCIES
-# No vLLM — pure transformers inference.
-# transformers pinned to a version that works cleanly with
-# Qwen2VLForConditionalGeneration and the FP8 checkpoint.
+#
+# SGLang replaces the transformers inference stack entirely.
+# It provides:
+#   - Continuous batching (no more manual BATCH_SIZE loops)
+#   - RadixAttention prefix caching (shared OCR prompt cached across all pages)
+#   - CUDA graphs for near-zero kernel launch overhead
+#   - FlashInfer kernels (fastest attention on Blackwell)
 # -------------------------------
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cu128
 
-# Flash Attention 2 (optional — speeds up attention on Blackwell)
+# Flash Attention 2 — SGLang can use it as a fallback attention backend
 RUN pip install --no-cache-dir flash-attn --no-build-isolation || \
-    echo "Flash Attention build failed, continuing without it"
+    echo "Flash Attention build failed, SGLang will use FlashInfer instead"
 
 # -------------------------------
 # MODEL DOWNLOAD (BUILD TIME)
@@ -59,7 +67,7 @@ snapshot_download(
     local_dir="/models/hf/allenai/olmOCR-2-7B-1025-FP8",
     local_dir_use_symlinks=False
 )
-print("olmOCR downloaded")
+print("olmOCR downloaded successfully")
 PYEOF
 
 # -------------------------------

@@ -7,7 +7,6 @@ WORKDIR /app
 # HF CACHE PATH
 # -------------------------------
 ENV HF_HOME=/models/hf
-ENV TRANSFORMERS_CACHE=/models/hf
 ENV HF_HUB_CACHE=/models/hf
 ENV HF_HUB_ENABLE_HF_TRANSFER=0
 ENV HF_HUB_DISABLE_XET=1
@@ -40,7 +39,7 @@ RUN apt-get update && apt-get install -y \
 # -------------------------------
 COPY requirements.txt .
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu128
 
 # Flash Attention 2 for faster inference (optional — falls back gracefully)
 RUN pip install --no-cache-dir flash-attn --no-build-isolation || echo "Flash Attention 2 build failed, will use default attention"

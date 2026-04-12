@@ -1,3 +1,7 @@
+# requirements.txt is now only used for reference.
+# All installs are handled in order inside the Dockerfile
+# using `uv pip install --system` to avoid pip resolver conflicts.
+
 runpod
 pillow
 opencv-python-headless
@@ -8,9 +12,9 @@ pdf2image
 compressed-tensors
 qwen-vl-utils
 
-# Pin vLLM BEFORE olmocr installs its own version.
-# vLLM >=0.8 changed config validation and breaks olmOCR-2-7B-1025-FP8.
-vllm==0.7.3
+# vLLM cu128 installed separately in Dockerfile via uv --torch-backend cu128
+# transformers pinned to 4.48.3 (Qwen2Tokenizer compatibility with vLLM)
+transformers==4.48.3
 
-# Install olmocr WITHOUT its gpu extras so it doesn't override the pinned vLLM above.
+# olmocr without [gpu] extra — vLLM already owns torch
 olmocr

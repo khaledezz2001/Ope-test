@@ -117,6 +117,7 @@ def load_model():
     llm_engine = LLM(
         model=MODEL_PATH,
         trust_remote_code=True,
+        tokenizer_mode="auto",      # required for multimodal in vLLM 0.7.x
         max_model_len=4096,
         limit_mm_per_prompt={"image": 1},
         gpu_memory_utilization=0.9,

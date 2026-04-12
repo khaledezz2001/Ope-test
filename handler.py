@@ -13,7 +13,6 @@ from pdf2image import convert_from_bytes
 # OFFLINE MODE (RUNTIME)
 # ===============================
 os.environ["HF_HOME"] = "/models/hf"
-os.environ["TRANSFORMERS_CACHE"] = "/models/hf"
 os.environ["HF_HUB_CACHE"] = "/models/hf"
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -112,7 +111,7 @@ def load_model():
         return
 
     log("Loading processor...")
-    processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
+    processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True, use_fast=True)
 
     log("Loading vLLM engine...")
     llm_engine = LLM(

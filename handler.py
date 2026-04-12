@@ -2,10 +2,8 @@ import os
 import base64
 import io
 import time
-import torch
 import runpod
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForImageTextToText
 from pdf2image import convert_from_bytes
 
 # ===============================
@@ -25,10 +23,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 MODEL_PATH = "/models/hf/allenai/olmOCR-2-7B-1025-FP8"
 MAX_PAGES = 100
 MAX_NEW_TOKENS = 1536
-BATCH_SIZE = 8   # pages per forward pass — tune down if OOM, up for speed
+BATCH_SIZE = 8          # concurrent requests to SGLang runtime
 
-model = None
-processor = None
+engine = None           # sglang.Engine instance
 
 def log(msg):
     print(f"[BOOT] {msg}", flush=True)
@@ -80,52 +77,24 @@ def is_hallucinated_output(text: str) -> bool:
 # ===============================
 # IMAGE DECODING
 # ===============================
-def decode_image(b64):
+def decode_image(b64: str) -> Image.Image:
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
     target_width = 1600
     scale = target_width / img.width
     img = img.resize((target_width, int(img.height * scale)), Image.BICUBIC)
     return img
 
-def decode_pdf(b64):
+def decode_pdf(b64: str) -> list:
     pdf_bytes = base64.b64decode(b64)
     images = convert_from_bytes(
         pdf_bytes, dpi=150, fmt="png", thread_count=4, use_pdftocairo=True
     )
     return images[:MAX_PAGES]
 
-# ===============================
-# LOAD MODEL ONCE
-# ===============================
-def load_model():
-    global model, processor
-    if model is not None:
-        return
-
-    log("Loading processor...")
-    processor = AutoProcessor.from_pretrained(MODEL_PATH, local_files_only=True)
-
-    log("Loading model onto GPU...")
-    # Load as bfloat16 — the FP8 checkpoint is dequantized on load.
-    # FP8 inference kernels are not available on Blackwell (sm_120) yet,
-    # so running in FP8 falls back to slow scalar ops (~90s/page).
-    # bfloat16 uses native tensor cores and is ~10x faster here.
-    model = AutoModelForImageTextToText.from_pretrained(
-        MODEL_PATH,
-        torch_dtype=torch.bfloat16,
-        device_map="cuda",
-        trust_remote_code=True,
-        local_files_only=True,
-        ignore_mismatched_sizes=True,
-        attn_implementation="sdpa",  # scaled dot-product attention — faster than eager
-    )
-    model.eval()
-
-    log("Compiling model with torch.compile...")
-    # torch.compile fuses ops and enables CUDA graphs — big win on Blackwell.
-    # "reduce-overhead" is the best mode for repeated same-shape inference.
-    model = torch.compile(model, mode="reduce-overhead", fullgraph=False)
-    log("Model loaded and compiled successfully")
+def image_to_b64(img: Image.Image) -> str:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 # ===============================
 # OCR PROMPT
@@ -136,72 +105,74 @@ OCR_PROMPT_TEXT = (
     "Convert equations to LateX and tables to HTML."
 )
 
-def build_messages(image: Image.Image) -> list:
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text",  "text": OCR_PROMPT_TEXT}
-            ]
-        }
-    ]
+# ===============================
+# LOAD SGLang ENGINE ONCE
+# ===============================
+def load_engine():
+    global engine
+    if engine is not None:
+        return
+
+    import sglang as sgl
+
+    log("Starting SGLang engine...")
+    engine = sgl.Engine(
+        model_path=MODEL_PATH,
+        dtype="bfloat16",           # native tensor-core speed on Blackwell
+        # FP8 quantization note: the FP8 checkpoint is loaded and run in bfloat16
+        # because FP8 GEMM kernels are not yet stable on sm_120 (Blackwell).
+        # Once sglang ships sm_120 FP8 kernels you can switch to dtype="fp8".
+        mem_fraction_static=0.90,   # give VRAM to KV-cache; tune if OOM
+        max_running_requests=BATCH_SIZE,
+        trust_remote_code=True,
+        log_level="warning",
+        # RadixAttention is on by default — keeps shared prefixes in KV-cache.
+        # All pages share the same system prompt so prefix caching is a big win.
+        enable_prefix_caching=True,
+    )
+    log("SGLang engine ready")
 
 # ===============================
-# BATCH OCR (transformers)
+# BATCH OCR via SGLang
 # ===============================
 def ocr_batch(images: list) -> list:
-    results = []
+    """
+    Send all pages as parallel async requests to the SGLang engine.
+    SGLang handles scheduling, continuous batching, and prefix caching internally.
+    """
+    import sglang as sgl
 
-    for i in range(0, len(images), BATCH_SIZE):
-        chunk = images[i:i + BATCH_SIZE]
-
-        # Build per-image chat messages and apply the chat template
-        texts = []
-        all_images = []
-        for img in chunk:
-            messages = build_messages(img)
-            text = processor.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            texts.append(text)
-            all_images.append(img)
-
-        inputs = processor(
-            text=texts,
-            images=all_images,
-            return_tensors="pt",
-            padding=True,
-        ).to("cuda")
-
-        with torch.inference_mode():
-            generated_ids = model.generate(
-                **inputs,
+    @sgl.function
+    def ocr_page(s, image_b64: str):
+        s += sgl.user(
+            sgl.image(image_b64) + OCR_PROMPT_TEXT
+        )
+        s += sgl.assistant(
+            sgl.gen(
+                "result",
                 max_new_tokens=MAX_NEW_TOKENS,
-                do_sample=False,
+                temperature=0,
                 repetition_penalty=1.1,
-                use_cache=True,
             )
+        )
 
-        # Decode only the newly generated tokens (strip the prompt)
-        input_len = inputs["input_ids"].shape[1]
-        for gen_ids in generated_ids:
-            new_tokens = gen_ids[input_len:]
-            decoded = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
-            results.append(decoded.strip())
+    # Build argument list — one dict per page
+    args = [{"image_b64": image_to_b64(img)} for img in images]
 
-        del inputs, generated_ids
-        torch.cuda.empty_cache()
+    # run() dispatches all requests concurrently via the engine
+    states = ocr_page.run_batch(
+        args,
+        num_threads=BATCH_SIZE,     # parallel HTTP workers feeding the engine
+        progress_bar=False,
+    )
 
-    return results
+    return [s["result"].strip() for s in states]
 
 # ===============================
 # HANDLER
 # ===============================
 def handler(event):
-    load_model()
+    load_engine()
 
     try:
         if "image" in event["input"]:
@@ -209,10 +180,10 @@ def handler(event):
         elif "file" in event["input"]:
             pages = decode_pdf(event["input"]["file"])
         else:
-            return {"status": "error", "message": "Missing image or file"}
+            return {"status": "error", "message": "Missing 'image' or 'file' in input"}
 
         total_pages = len(pages)
-        log(f"Processing {total_pages} pages using transformers...")
+        log(f"Processing {total_pages} page(s) via SGLang...")
         start_time = time.time()
 
         batch_results = ocr_batch(pages)
@@ -224,12 +195,10 @@ def handler(event):
             if text.upper().startswith("EMPTY_PAGE"):
                 text = "[Empty or unreadable page]"
             elif is_hallucinated_output(text):
-                log(f"Warning: Page {page_num} appears to be hallucinated")
+                log(f"Warning: Page {page_num} flagged as hallucinated")
                 text = "[Empty or unreadable page]"
 
             extracted_pages.append({"page": page_num, "text": text})
-
-        torch.cuda.empty_cache()
 
         elapsed = time.time() - start_time
         log(f"Completed {total_pages} pages in {elapsed:.1f}s ({elapsed/total_pages:.1f}s/page)")
@@ -237,27 +206,26 @@ def handler(event):
         return {
             "status": "success",
             "total_pages": len(extracted_pages),
-            "pages": extracted_pages
+            "pages": extracted_pages,
         }
 
     except Exception as e:
-        log(f"Error: {str(e)}")
-        torch.cuda.empty_cache()
+        import traceback
+        log(f"Error: {e}\n{traceback.format_exc()}")
         return {"status": "error", "message": str(e)}
 
 # ===============================
 # PRELOAD & WARMUP
 # ===============================
-log("Preloading model...")
-load_model()
+log("Preloading SGLang engine...")
+load_engine()
 
-if torch.cuda.is_available():
-    log("Running dummy warmup...")
-    dummy_image = Image.new('RGB', (1600, 1200), color='white')
-    try:
-        _ = ocr_batch([dummy_image])
-        log("Warmup complete!")
-    except Exception as e:
-        log(f"Warmup error: {e}")
+log("Running warmup request...")
+try:
+    dummy = Image.new("RGB", (1600, 1200), color="white")
+    _ = ocr_batch([dummy])
+    log("Warmup complete!")
+except Exception as e:
+    log(f"Warmup error (non-fatal): {e}")
 
 runpod.serverless.start({"handler": handler})

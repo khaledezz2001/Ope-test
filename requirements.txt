@@ -1,8 +1,7 @@
 runpod
-# Torch is managed by the base image / vLLM implicitly
-transformers>=4.49.0,<4.50.0
-accelerate
-pillow  # Using regular pillow to avoid build issues
+# olmOCR bundles the correct vLLM + transformers versions
+olmocr[gpu]
+pillow
 opencv-python-headless
 huggingface_hub
 protobuf
@@ -10,4 +9,3 @@ numpy<2.0
 pdf2image
 compressed-tensors
 qwen-vl-utils
-vllm

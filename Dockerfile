@@ -52,9 +52,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cu128
 
-# Flash Attention 2 — SGLang can use it as a fallback attention backend
-RUN pip install --no-cache-dir flash-attn --no-build-isolation || \
-    echo "Flash Attention build failed, SGLang will use FlashInfer instead"
+# FlashInfer JIT cache — pre-compiled kernels for cu128, avoids runtime JIT compilation
+RUN pip install --no-cache-dir flashinfer-jit-cache \
+    --index-url https://flashinfer.ai/whl/cu128
 
 # -------------------------------
 # MODEL DOWNLOAD (BUILD TIME)

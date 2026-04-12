@@ -1,15 +1,15 @@
 runpod
 pillow
-opencv-python-headless
+pdf2image
+numpy<2.0
 huggingface_hub
 protobuf
-numpy<2.0
-pdf2image
 qwen-vl-utils
 compressed-tensors
 
-# olmocr without [gpu] extra — torch is already in the base image
+# olmocr (no [gpu] extra — torch is in base image)
 olmocr
 
-# accelerate is required for device_map="cuda" in transformers
-accelerate
+# SGLang — replaces transformers for inference (continuous batching, prefix cache, cuda graphs)
+# Install the nightly build for Blackwell (sm_120 / cu128) support
+sglang[all] --find-links https://flashinfer.ai/whl/cu128/torch2.8/flashinfer-python

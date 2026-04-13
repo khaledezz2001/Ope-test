@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # ---------------------------------------------------------------
 # Download Chandra 2 at build time (~8GB, 4B params)
 # ---------------------------------------------------------------
-RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python - <<'PYEOF'
+RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python3 - <<'PYEOF'
 from huggingface_hub import snapshot_download
 snapshot_download(
     repo_id="datalab-to/chandra-ocr-2",

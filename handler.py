@@ -26,6 +26,12 @@ MAX_PAGES       = 100
 MAX_NEW_TOKENS  = 12384
 MAX_NUM_SEQS    = 8     # concurrent pages per batch
 
+# ---------------------------------------------------------------
+# IMAGE QUALITY SETTINGS (Option 2 upgrade)
+# ---------------------------------------------------------------
+PDF_DPI         = 300   # was 150 — doubles pixel density for scanned docs
+TARGET_WIDTH    = 2400  # was 1600 — sharper input = fewer OCR errors
+
 llm = None   # vllm.LLM — loaded once at cold start
 
 def log(msg):
@@ -36,16 +42,26 @@ def log(msg):
 # ===============================
 def decode_image(b64: str) -> Image.Image:
     img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-    target_width = 1600
-    scale = target_width / img.width
-    return img.resize((target_width, int(img.height * scale)), Image.BICUBIC)
+    scale = TARGET_WIDTH / img.width
+    return img.resize((TARGET_WIDTH, int(img.height * scale)), Image.BICUBIC)
 
 def decode_pdf(b64: str) -> list:
     pdf_bytes = base64.b64decode(b64)
     images = convert_from_bytes(
-        pdf_bytes, dpi=150, fmt="png", thread_count=4, use_pdftocairo=True
+        pdf_bytes,
+        dpi=PDF_DPI,          # upgraded from 150 → 300
+        fmt="png",
+        thread_count=4,
+        use_pdftocairo=True,
     )
-    return images[:MAX_PAGES]
+    # Resize each page to TARGET_WIDTH after rasterization
+    resized = []
+    for img in images[:MAX_PAGES]:
+        scale = TARGET_WIDTH / img.width
+        resized.append(
+            img.resize((TARGET_WIDTH, int(img.height * scale)), Image.BICUBIC)
+        )
+    return resized
 
 # ===============================
 # LOAD vLLM IN-PROCESS (once)
@@ -66,19 +82,17 @@ def load_model():
         gpu_memory_utilization=0.88,
         trust_remote_code=True,
         limit_mm_per_prompt={"image": 1},
-        enforce_eager=False,         # allow CUDA graphs after warmup
+        enforce_eager=False,
     )
     log("Chandra 2 vLLM engine ready")
 
 # ===============================
 # BUILD CHANDRA PROMPT
-# Uses the ocr_layout prompt from chandra.prompts
 # ===============================
 def build_prompt(img: Image.Image) -> dict:
     from chandra.prompts import PROMPT_MAPPING
     from transformers import AutoProcessor
 
-    # Load processor once — cached after first call via module-level singleton
     if not hasattr(build_prompt, "_processor"):
         build_prompt._processor = AutoProcessor.from_pretrained(
             MODEL_PATH, local_files_only=True
@@ -122,7 +136,6 @@ def ocr_batch(images: list) -> list:
         repetition_penalty=1.05,
     )
 
-    # Build all inputs at once — vLLM batches them internally
     inputs = [build_prompt(img) for img in images]
     outputs = llm.generate(inputs, sampling_params=sampling_params)
 
@@ -130,7 +143,6 @@ def ocr_batch(images: list) -> list:
     for out in outputs:
         raw = out.outputs[0].text.strip()
         try:
-            # parse_markdown converts Chandra's HTML output to clean markdown
             text = parse_markdown(raw)
         except Exception:
             text = raw
@@ -153,7 +165,7 @@ def handler(event):
             return {"status": "error", "message": "Missing 'image' or 'file' in input"}
 
         total_pages = len(pages)
-        log(f"Processing {total_pages} page(s) with Chandra 2 + vLLM...")
+        log(f"Processing {total_pages} page(s) at {PDF_DPI} DPI / {TARGET_WIDTH}px width...")
         t0 = time.time()
 
         raw_results = ocr_batch(pages)
@@ -181,10 +193,7 @@ def handler(event):
 
 # ===============================
 # ENTRY POINT
-# *** THIS GUARD IS THE CRITICAL FIX ***
-# vLLM v1 uses `spawn` multiprocessing. When it spawns worker processes,
-# they re-import this file. Without this guard, load_model() runs again
-# inside the worker, causing the "bootstrapping phase" RuntimeError.
+# *** __main__ guard prevents vLLM spawn workers from re-running this ***
 # ===============================
 if __name__ == "__main__":
     log("Cold start — loading Chandra 2 via vLLM...")
@@ -192,7 +201,7 @@ if __name__ == "__main__":
 
     log("Running warmup pass...")
     try:
-        dummy = Image.new("RGB", (1600, 1200), color="white")
+        dummy = Image.new("RGB", (TARGET_WIDTH, 1800), color="white")
         _ = ocr_batch([dummy])
         log("Warmup complete!")
     except Exception as e:

@@ -6,11 +6,11 @@ pillow
 pdf2image
 numpy<2.0
 
-# HF ecosystem
+# HF ecosystem (vLLM + torch already in base image)
 huggingface_hub
-protobuf
 transformers
 accelerate
+protobuf
 
 # olmOCR model deps
 qwen-vl-utils

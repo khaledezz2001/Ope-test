@@ -62,4 +62,6 @@ ENV TRANSFORMERS_OFFLINE=1
 # ---------------------------------------------------------------
 COPY handler.py .
 
-CMD ["python", "-u", "handler.py"]
+# vllm/vllm-openai sets ENTRYPOINT to the vllm CLI — override it so our
+# handler runs with python3 directly instead of being passed as vllm args.
+ENTRYPOINT ["python3", "-u", "handler.py"]

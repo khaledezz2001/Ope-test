@@ -23,16 +23,16 @@ os.environ["VLLM_FLASH_ATTN_VERSION"] = "2"
 # ===============================
 MODEL_PATH      = "/models/hf/datalab-to/chandra-ocr-2"
 MAX_PAGES       = 100
-MAX_NEW_TOKENS  = 12384
-MAX_NUM_SEQS    = 8     # concurrent pages per batch
+MAX_NEW_TOKENS  = 32768   # was 12384 — increased to prevent truncation on dense pages
+MAX_NUM_SEQS    = 4       # reduced from 8 to free up memory for larger context
 
 # ---------------------------------------------------------------
-# IMAGE QUALITY SETTINGS (Option 2 upgrade)
+# IMAGE QUALITY SETTINGS
 # ---------------------------------------------------------------
-PDF_DPI         = 300   # was 150 — doubles pixel density for scanned docs
-TARGET_WIDTH    = 2400  # was 1600 — sharper input = fewer OCR errors
+PDF_DPI         = 300
+TARGET_WIDTH    = 2400
 
-llm = None   # vllm.LLM — loaded once at cold start
+llm = None
 
 def log(msg):
     print(f"[HANDLER] {msg}", flush=True)
@@ -49,12 +49,11 @@ def decode_pdf(b64: str) -> list:
     pdf_bytes = base64.b64decode(b64)
     images = convert_from_bytes(
         pdf_bytes,
-        dpi=PDF_DPI,          # upgraded from 150 → 300
+        dpi=PDF_DPI,
         fmt="png",
         thread_count=4,
         use_pdftocairo=True,
     )
-    # Resize each page to TARGET_WIDTH after rasterization
     resized = []
     for img in images[:MAX_PAGES]:
         scale = TARGET_WIDTH / img.width
@@ -77,9 +76,9 @@ def load_model():
     llm = LLM(
         model=MODEL_PATH,
         dtype="bfloat16",
-        max_model_len=8192,
+        max_model_len=32768,          # was 8192 — must match MAX_NEW_TOKENS
         max_num_seqs=MAX_NUM_SEQS,
-        gpu_memory_utilization=0.88,
+        gpu_memory_utilization=0.92,  # slightly higher to accommodate larger context
         trust_remote_code=True,
         limit_mm_per_prompt={"image": 1},
         enforce_eager=False,
@@ -142,6 +141,12 @@ def ocr_batch(images: list) -> list:
     results = []
     for out in outputs:
         raw = out.outputs[0].text.strip()
+
+        # Check if output was truncated (didn't finish naturally)
+        finish_reason = out.outputs[0].finish_reason
+        if finish_reason == "length":
+            log(f"WARNING: Output truncated — consider increasing MAX_NEW_TOKENS further")
+
         try:
             text = parse_markdown(raw)
         except Exception:

@@ -180,17 +180,22 @@ def handler(event):
         return {"status": "error", "message": str(e)}
 
 # ===============================
-# COLD START — preload + warmup
+# ENTRY POINT
+# *** THIS GUARD IS THE CRITICAL FIX ***
+# vLLM v1 uses `spawn` multiprocessing. When it spawns worker processes,
+# they re-import this file. Without this guard, load_model() runs again
+# inside the worker, causing the "bootstrapping phase" RuntimeError.
 # ===============================
-log("Cold start — loading Chandra 2 via vLLM...")
-load_model()
+if __name__ == "__main__":
+    log("Cold start — loading Chandra 2 via vLLM...")
+    load_model()
 
-log("Running warmup pass...")
-try:
-    dummy = Image.new("RGB", (1600, 1200), color="white")
-    _ = ocr_batch([dummy])
-    log("Warmup complete!")
-except Exception as e:
-    log(f"Warmup error (non-fatal): {e}")
+    log("Running warmup pass...")
+    try:
+        dummy = Image.new("RGB", (1600, 1200), color="white")
+        _ = ocr_batch([dummy])
+        log("Warmup complete!")
+    except Exception as e:
+        log(f"Warmup error (non-fatal): {e}")
 
-runpod.serverless.start({"handler": handler})
+    runpod.serverless.start({"handler": handler})

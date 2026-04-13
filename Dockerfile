@@ -1,7 +1,5 @@
 # ================================================================
-# Use the official vLLM image — already compiled with CUDA 12.8
-# and includes Blackwell SM120 kernel fixes as of v0.8+
-# No source build needed. Build time: ~3-5 min (just model download)
+# Official vLLM base image — pre-compiled CUDA 12.8, SM120 fixes
 # ================================================================
 FROM vllm/vllm-openai:latest
 
@@ -18,13 +16,11 @@ ENV HF_HUB_DISABLE_XET=1
 ENV TOKENIZERS_PARALLELISM=false
 
 # ---------------------------------------------------------------
-# Blackwell flags
+# Blackwell / SM120 flags
 # ---------------------------------------------------------------
 ENV CUDA_VISIBLE_DEVICES=0
 ENV TORCH_CUDA_ARCH_LIST="12.0+PTX"
-# FA3 not supported on sm_120 — force FA2
 ENV VLLM_FLASH_ATTN_VERSION=2
-# Use FlashInfer attention backend (Blackwell-stable)
 ENV VLLM_ATTENTION_BACKEND=FLASHINFER
 
 # ---------------------------------------------------------------
@@ -37,26 +33,26 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------
-# App deps (vLLM + torch already in base image)
+# Python deps
 # ---------------------------------------------------------------
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------
-# Model download at build time
+# Download Chandra 2 at build time (~8GB, 4B params)
 # ---------------------------------------------------------------
 RUN HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python - <<'PYEOF'
 from huggingface_hub import snapshot_download
 snapshot_download(
-    repo_id="allenai/olmOCR-2-7B-1025-FP8",
-    local_dir="/models/hf/allenai/olmOCR-2-7B-1025-FP8",
+    repo_id="datalab-to/chandra-ocr-2",
+    local_dir="/models/hf/datalab-to/chandra-ocr-2",
     local_dir_use_symlinks=False,
 )
-print("olmOCR downloaded successfully")
+print("Chandra 2 downloaded successfully")
 PYEOF
 
 # ---------------------------------------------------------------
-# Lock offline mode at runtime
+# Lock offline at runtime
 # ---------------------------------------------------------------
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1

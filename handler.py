@@ -92,7 +92,8 @@ def decode_image(b64):
 def decode_pdf(b64):
     pdf_bytes = base64.b64decode(b64)
     images = convert_from_bytes(
-        pdf_bytes, dpi=150, fmt="png", thread_count=4, use_pdftocairo=True
+        pdf_bytes, dpi=150, fmt="png", thread_count=4, use_pdftocairo=True,
+        size=(1600, None),  # cap width at 1600px to avoid decompression bomb
     )
     # Resize oversized pages to keep memory under control
     resized = []

@@ -1,16 +1,16 @@
+# RunPod serverless
 runpod
+
+# Image / PDF processing
 pillow
-opencv-python-headless
-transformers==4.49.0
-huggingface_hub<0.28
-protobuf
-numpy<2.0
 pdf2image
-qwen-vl-utils
-compressed-tensors
+numpy<2.0
 
-# olmocr without [gpu] extra — torch is already in the base image
-olmocr
+# Chandra OCR package — provides prompts, output parser (parse_markdown)
+# No [hf] extra needed — vLLM handles inference, transformers only for processor
+chandra-ocr
+transformers
 
-# accelerate is required for device_map="cuda" in transformers
-accelerate
+# HF hub for model download at build time
+huggingface_hub
+protobuf
